@@ -1,1 +1,166 @@
+---
+title: "tugas"
+author: "Rafy Al Fatih"
+date: "2026-08-24"
+output: html_document
+---
+
+```{r}
+library(readr)
+data_mpdw <- read_csv("C:/Users/rafya/Downloads/data mpdw.csv")
+```
+
+```{r}
+library("forecast")
+library("graphics")
+library("TTR")
+library("TSA")
+```
+
+```{r}
+data_mpdw.ts <- ts(data_mpdw$`Monthly Anomaly`)
+summary(data_mpdw.ts)
+```
+
+```{r}
+ts.plot(data_mpdw.ts, main = "Monthly Anomaly Time Series", ylab = "Anomaly", xlab = "Period")
+points(data_mpdw.ts, col = "blue", pch = 20)
+
+dev.copy(png, "plot_data_mpdw.png")
+dev.off()
+```
+
+# Moving Average
+```{r}
+n <- nrow(data_mpdw)
+n_train <- floor(0.8 * n)
+
+training_ma <- data_mpdw[1:n_train, ]
+testing_ma <- data_mpdw[(n_train + 1):n, ]
+
+training_ma.ts <- ts(training_ma$`Monthly Anomaly`)
+testing_ma.ts <- ts(testing_ma$`Monthly Anomaly`)
+```
+
+## Eksplorasi
+```{r}
+# Keseluruhan
+plot(data_mpdw.ts, main = "Monthly Anomaly Time Series", ylab = "Anomaly", xlab = "Period")
+points(data_mpdw.ts, col = "blue", pch = 20)
+
+# Latih
+plot(training_ma.ts, main = "Training Set - Monthly Anomaly Time Series", ylab = "Anomaly", xlab = "Period")
+points(training_ma.ts, col = "blue", pch = 20)
+
+# Uji
+plot(testing_ma.ts, main = "Testing Set - Monthly Anomaly Time Series", ylab = "Anomaly", xlab = "Period")
+points(testing_ma.ts, col = "blue", pch = 20)
+```
+
+```{r}
+library(ggplot2)
+ggplot(data_mpdw, aes(x = `Year`, y = `Monthly Anomaly`)) +
+  geom_line(color = "blue") +
+  geom_point(color = "red") +
+  labs(title = "Monthly Anomaly Time Series", x = "Year", y = "Anomaly") +
+  theme_minimal()
+```
+
+```{r}
+library(TTR)
+
+# 1. Membuat Fungsi Pencarian
+find_optimum_sma <- function(ts_data, max_n = 12) {
+  # Menyiapkan kerangka data untuk menyimpan hasil
+  results <- data.frame(n = integer(), MAPE = numeric(), RMSE = numeric())
+  
+  # Looping untuk mencoba n dari 2 hingga batas maksimal
+  for (i in 2:max_n) {
+    # Proses pemulusan SMA
+    sma_fit <- SMA(ts_data, n = i)
+    
+    # Penyesuaian lag: SMA periode ke-t adalah ramalan untuk (t+1)
+    aktual <- ts_data[(i+1):length(ts_data)]
+    ramalan <- sma_fit[i:(length(ts_data)-1)] 
+    
+    # Perhitungan Error
+    error <- aktual - ramalan
+    mape <- mean(abs(error / aktual), na.rm = TRUE) * 100
+    rmse <- sqrt(mean(error^2, na.rm = TRUE))
+    
+    # Menyimpan hasil setiap iterasi ke dalam tabel
+    results <- rbind(results, data.frame(n = i, MAPE = mape, RMSE = rmse))
+  }
+  
+  # 2. Menampilkan Tabel Evaluasi Lengkap
+  cat("--- Hasil Evaluasi Akurasi Berbagai Nilai n ---\n")
+  print(results)
+  
+  # 3. Mengekstrak n dengan MAPE terkecil
+  best_n <- results$n[which.min(results$MAPE)]
+  cat("\n============================================\n")
+  cat("Nilai n optimum berdasarkan MAPE terkecil adalah:", best_n, "\n")
+  cat("============================================\n")
+  
+  return(best_n)
+}
+
+# Eksekusi Fungsi pada data Anda
+# max_n adalah batas maksimal periode yang ingin Anda uji (misal: 12 periode)
+n_optimum <- find_optimum_sma(training_ma.ts, max_n = 12)
+
+# Mengaplikasikan nilai n optimum ke model akhir Anda
+data.sma_optimal <- SMA(training_ma.ts, n = n_optimum)
+```
+
+## Single Moving Average
+```{r}
+data.sma <- SMA(training_ma.ts, n = 5)
+data.sma
+```
+
+```{r}
+data.ramal <- c(NA, data.sma)
+data.ramal
+```
+
+
+```{r}
+data.gab <- cbind(aktual = c(data_mpdw.ts), pemulusan = c(data.sma, rep(NA, 2065)), 
+                  ramalan = c(data.ramal, rep(data.ramal[length(data.ramal)], 2064)))
+data.gab
+```
+
+```{r}
+ts.plot(data.gab, main = "Hasil Pemulusan dan Ramalan", ylab = "Anomaly", xlab = "Period")
+points(data.gab[, "aktual"], col = "black", pch = 20)
+lines(data.gab[, "pemulusan"], col = "blue", lwd = 2)
+lines(data.gab[, "ramalan"], col = "red", lwd = 2, lty = 2)
+legend("topright", legend = c("Aktual", "Pemulusan", "Ramalan"), 
+       col = c("black", "blue", "red"), lty = c(1, 1, 2), lwd = 2)
+```
+
+# Akurasi Data Latih
+```{r}
+error_train_sma <- training_ma.ts - data.ramal[1:length(training_ma.ts)]
+
+SSE_train_sma <- sum(error_train_sma^2, na.rm = TRUE)
+MSE_train_sma <- mean(error_train_sma^2, na.rm = TRUE)
+MAPE_train_sma <- mean(abs(error_train_sma / training_ma.ts), na.rm = TRUE) * 100
+
+akurasi_train_sma <- matrix(c(
+  SSE = SSE_train_sma,
+  MSE = MSE_train_sma,
+  MAPE = MAPE_train_sma
+))
+
+row.names(akurasi_train_sma) <- c("SSE", "MSE", "MAPE")
+colnames(akurasi_train_sma) <- c("Nilai")
+akurasi_train_sma
+
+```
+
+
+
+
 
