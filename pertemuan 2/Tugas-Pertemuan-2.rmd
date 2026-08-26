@@ -159,8 +159,139 @@ colnames(akurasi_train_sma) <- c("Nilai")
 akurasi_train_sma
 
 ```
+```{r}
+library(forecast)
+
+# Asumsi data awal:
+# train_data : vektor data training (misal data 1:96)
+# test_data  : vektor data testing (misal testing_ma.ts, data 97:120)
+# n_ahead    : panjang periode testing (misal 24 periode)
+
+cari_m_optimum_dma <- function(train_data, test_data, m_range = 2:8) {
+  hasil_list <- list()
+  n_test <- length(test_data)
+  
+  for (m in m_range) {
+    n_train <- length(train_data)
+    
+    # 1. Single Moving Average
+    sma <- stats::filter(train_data, rep(1/m, m), sides = 1)
+    
+    # 2. Double Moving Average (DMA)
+    dma <- stats::filter(sma, rep(1/m, m), sides = 1)
+    
+    # Ambil nilai terakhir yang valid dari training
+    At_last <- (2 * sma[n_train]) - dma[n_train]
+    Bt_last <- (2 / (m - 1)) * (sma[n_train] - dma[n_train])
+    
+    # 3. Peramalan n-langkah ke depan (out-of-sample forecast untuk data testing)
+    p <- 1:n_test
+    forecast_test <- At_last + (Bt_last * p)
+    
+    # 4. Hitung Error terhadap data testing
+    error_test <- test_data - forecast_test
+    
+    sse  <- sum(error_test^2, na.rm = TRUE)
+    mse  <- mean(error_test^2, na.rm = TRUE)
+    rmse <- sqrt(mse)
+    mape <- mean(abs(error_test / test_data) * 100, na.rm = TRUE)
+    
+    hasil_list[[as.character(m)]] <- c(m = m, SSE = sse, MSE = mse, RMSE = rmse, MAPE = mape)
+  }
+  
+  # Gabungkan hasil ke dalam dataframe
+  tabel_evaluasi <- as.data.frame(do.call(rbind, hasil_list))
+  rownames(tabel_evaluasi) <- NULL
+  
+  # Urutkan berdasarkan MAPE terkecil
+  tabel_evaluasi <- tabel_evaluasi[order(tabel_evaluasi$MAPE), ]
+  
+  # m terbaik
+  m_optimum <- tabel_evaluasi$m[1]
+  
+  cat("=========================================\n")
+  cat("Ringkasan Evaluasi Seluruh Nilai m:\n")
+  cat("=========================================\n")
+  print(tabel_evaluasi)
+  cat("-----------------------------------------\n")
+  cat(paste0(">>> Nilai m Optimum (MAPE Terkecil): m = ", m_optimum, 
+             " (MAPE: ", round(tabel_evaluasi$MAPE[1], 4), "%)\n"))
+  
+  return(list(tabel = tabel_evaluasi, m_opt = m_optimum))
+}
+m_optimum_result <- cari_m_optimum_dma(training_ma.ts, testing_ma.ts, m_range = 2:8)
+```
 
 
+# Akurasi data uji
+```{r}
+error_test.sma <- testing_ma.ts-data.gab[97:120,3]
 
+SSE_test.sma <- sum(error_test.sma^2)
+MSE_test.sma <- mean(error_test.sma^2)
+MAPE_test.sma <- mean(abs((error_test.sma/testing_ma.ts*100)))
 
+akurasi_test.sma <- matrix(c(SSE_test.sma, MSE_test.sma, MAPE_test.sma))
+row.names(akurasi_test.sma)<- c("SSE", "MSE", "MAPE")
+colnames(akurasi_test.sma) <- c("Akurasi m = 4")
+akurasi_test.sma
+
+```
+# Double Moving Averag
+```{r}
+dma <- SMA(data.sma, n = 2)
+At <- 2*data.sma - dma
+Bt <- 2/(2-1)*(data.sma - dma)
+data.dma<- At+Bt
+data.ramal2<- c(NA, data.dma)
+
+t = 1:24
+f = c()
+
+for (i in t) {
+  f[i] = At[length(At)] + Bt[length(Bt)]*(i)
+}
+
+data.gab2 <- cbind(aktual = c(data_mpdw.ts), 
+                   pemulusan1 = c(data.sma,rep(NA,24)),
+                   pemulusan2 = c(dma, rep(NA,24)),
+                   At = c(At, rep(NA,24)), 
+                   Bt = c(Bt,rep(NA,24)),
+                   ramalan = c(data.ramal2, f[-1]))
+data.gab2
+```
+
+```{r}
+ts.plot(data_mpdw.ts, xlab="Time Period ", ylab="Sales", main= "DMA N=2 Data Sales")
+points(data_mpdw.ts)
+lines(data.gab2[,3],col="green",lwd=2)
+lines(data.gab2[,6],col="red",lwd=2)
+legend("topleft",c("data aktual","data pemulusan","data peramalan"), lty=8, col=c("black","green","red"), cex=0.8)
+
+```
+## Akurasi Data Latih
+```{r}
+error_train.dma = training_ma.ts-data.ramal2[1:length(training_ma.ts)]
+
+SSE_train.dma = sum(error_train.dma[8:length(training_ma.ts)]^2)
+MSE_train.dma = mean(error_train.dma[8:length(training_ma.ts)]^2)
+MAPE_train.dma = mean(abs((error_train.dma[8:length(training_ma.ts)]/training_ma.ts[8:length(training_ma.ts)])*100))
+
+akurasi_train.dma <- matrix(c(SSE_train.dma, MSE_train.dma, MAPE_train.dma))
+row.names(akurasi_train.dma)<- c("SSE", "MSE", "MAPE")
+colnames(akurasi_train.dma) <- c("Akurasi m = 2")
+akurasi_train.dma
+```
+## Akurasi data uji
+```{r}
+error_test.dma = testing_ma.ts-data.gab2[97:120,6]
+SSE_test.dma = sum(error_test.dma^2)
+MSE_test.dma = mean(error_test.dma^2)
+MAPE_test.dma = mean(abs((error_test.dma/testing_ma.ts*100)))
+
+akurasi_test.dma <- matrix(c(SSE_test.dma, MSE_test.dma, MAPE_test.dma))
+row.names(akurasi_test.dma)<- c("SSE", "MSE", "MAPE")
+colnames(akurasi_test.dma) <- c("Akurasi m = 2")
+akurasi_test.dma
+```
 
