@@ -1,0 +1,446 @@
+---
+title: "Kelompok"
+author: "Rafy Al Fatih"
+date: "2026-08-28"
+output: html_document
+---
+
+
+```{r}
+library(readr)
+Data_Tugas <- read_csv("C:/Users/rafya/Downloads/Data_Tugas2.csv")
+```
+
+```{r}
+library("forecast")
+library("graphics")
+library("TTR")
+library("TSA")
+library("ggplot2")
+```
+
+# ambil data baris ke 40001 sampe 50000
+```{r}
+Data_Tugas$Datetime <- as.POSIXct(Data_Tugas$Datetime, format = "%Y-%m-%d %H:%M:%S")
+
+Data_Tugas <- Data_Tugas[order(Data_Tugas$Datetime), ]
+kelompok <- Data_Tugas[40001:50000, ]
+kelompok <- kelompok[order(kelompok$Datetime), ]
+
+nrow(kelompok)
+
+```
+
+
+```{r}
+Data_Tugas.ts <- ts(kelompok$PJME_MW)
+summary(Data_Tugas.ts)
+```
+
+```{r}
+ts.plot(Data_Tugas.ts, main = "Konsumsi listrik", ylab = "Konsumsi listrik", xlab = "Period")
+points(Data_Tugas.ts, col = "blue", pch = 20)
+
+dev.copy(png, "plot_Data_Tugas.png")
+dev.off()
+```
+
+# Moving Average
+```{r}
+n <- nrow(Data_Tugas)
+n_train <- floor(0.8 * n)
+
+training_ma <- Data_Tugas[1:n_train, ]
+testing_ma <- Data_Tugas[(n_train + 1):n, ]
+
+training_ma.ts <- ts(training_ma$`PJME_MW`)
+testing_ma.ts <- ts(testing_ma$`PJME_MW`)
+```
+
+## Eksplorasi
+```{r}
+# Keseluruhan
+plot(Data_Tugas.ts, main = "PJME_MW Time Series", ylab = "Anomaly", xlab = "Period")
+points(Data_Tugas.ts, col = "blue", pch = 20)
+
+# Latih
+plot(training_ma.ts, main = "Training Set - PJME_MW Time Series", ylab = "Anomaly", xlab = "Period")
+points(training_ma.ts, col = "blue", pch = 20)
+
+# Uji
+plot(testing_ma.ts, main = "Testing Set - PJME_MW Time Series", ylab = "Anomaly", xlab = "Period")
+points(testing_ma.ts, col = "blue", pch = 20)
+```
+
+```{r}
+library(ggplot2)
+ggplot(Data_Tugas, aes(x = `Datetime`, y = `PJME_MW`)) +
+  geom_line(color = "blue") +
+  geom_point(color = "red") +
+  labs(title = "PJME_MW Time Series", x = "Datetime", y = "PJME_MW") +
+  theme_minimal()
+```
+
+```{r}
+library(TTR)
+
+# 1. Membuat Fungsi Pencarian
+find_optimum_sma <- function(ts_data, max_n = 12) {
+  # Menyiapkan kerangka data untuk menyimpan hasil
+  results <- data.frame(n = integer(), MAPE = numeric(), RMSE = numeric())
+  
+  # Looping untuk mencoba n dari 2 hingga batas maksimal
+  for (i in 2:max_n) {
+    # Proses pemulusan SMA
+    sma_fit <- SMA(ts_data, n = i)
+    
+    # Penyesuaian lag: SMA periode ke-t adalah ramalan untuk (t+1)
+    aktual <- ts_data[(i+1):length(ts_data)]
+    ramalan <- sma_fit[i:(length(ts_data)-1)] 
+    
+    # Perhitungan Error
+    error <- aktual - ramalan
+    mape <- mean(abs(error / aktual), na.rm = TRUE) * 100
+    rmse <- sqrt(mean(error^2, na.rm = TRUE))
+    
+    # Menyimpan hasil setiap iterasi ke dalam tabel
+    results <- rbind(results, data.frame(n = i, MAPE = mape, RMSE = rmse))
+  }
+  
+  # 2. Menampilkan Tabel Evaluasi Lengkap
+  cat("--- Hasil Evaluasi Akurasi Berbagai Nilai n ---\n")
+  print(results)
+  
+  # 3. Mengekstrak n dengan MAPE terkecil
+  best_n <- results$n[which.min(results$MAPE)]
+  cat("\n============================================\n")
+  cat("Nilai n optimum berdasarkan MAPE terkecil adalah:", best_n, "\n")
+  cat("============================================\n")
+  
+  return(best_n)
+}
+
+# Eksekusi Fungsi pada data Anda
+# max_n adalah batas maksimal periode yang ingin Anda uji (misal: 12 periode)
+n_optimum <- find_optimum_sma(training_ma.ts, max_n = 12)
+
+# Mengaplikasikan nilai n optimum ke model akhir Anda
+data.sma_optimal <- SMA(training_ma.ts, n = n_optimum)
+```
+
+## Single Moving Average
+```{r}
+data.sma <- SMA(training_ma.ts, n = 5)
+data.sma
+```
+
+```{r}
+data.ramal <- c(NA, data.sma)
+data.ramal
+```
+
+
+```{r}
+data.gab <- cbind(aktual = c(Data_Tugas.ts), pemulusan = c(data.sma, rep(NA, 2065)), 
+                  ramalan = c(data.ramal, rep(data.ramal[length(data.ramal)], 2064)))
+data.gab
+```
+
+```{r}
+ts.plot(data.gab, main = "Hasil Pemulusan dan Ramalan", ylab = "Anomaly", xlab = "Period")
+points(data.gab[, "aktual"], col = "black", pch = 20)
+lines(data.gab[, "pemulusan"], col = "blue", lwd = 2)
+lines(data.gab[, "ramalan"], col = "red", lwd = 2, lty = 2)
+legend("topright", legend = c("Aktual", "Pemulusan", "Ramalan"), 
+       col = c("black", "blue", "red"), lty = c(1, 1, 2), lwd = 2)
+```
+
+# Akurasi Data Latih
+```{r}
+error_train_sma <- training_ma.ts - data.ramal[1:length(training_ma.ts)]
+
+SSE_train_sma <- sum(error_train_sma^2, na.rm = TRUE)
+MSE_train_sma <- mean(error_train_sma^2, na.rm = TRUE)
+MAPE_train_sma <- mean(abs(error_train_sma / training_ma.ts), na.rm = TRUE) * 100
+
+akurasi_train_sma <- matrix(c(
+  SSE = SSE_train_sma,
+  MSE = MSE_train_sma,
+  MAPE = MAPE_train_sma
+))
+
+row.names(akurasi_train_sma) <- c("SSE", "MSE", "MAPE")
+colnames(akurasi_train_sma) <- c("Nilai")
+akurasi_train_sma
+
+```
+```{r}
+library(forecast)
+
+# Asumsi data awal:
+# train_data : vektor data training (misal data 1:96)
+# test_data  : vektor data testing (misal testing_ma.ts, data 97:120)
+# n_ahead    : panjang periode testing (misal 24 periode)
+
+cari_m_optimum_dma <- function(train_data, test_data, m_range = 2:8) {
+  hasil_list <- list()
+  n_test <- length(test_data)
+  
+  for (m in m_range) {
+    n_train <- length(train_data)
+    
+    # 1. Single Moving Average
+    sma <- stats::filter(train_data, rep(1/m, m), sides = 1)
+    
+    # 2. Double Moving Average (DMA)
+    dma <- stats::filter(sma, rep(1/m, m), sides = 1)
+    
+    # Ambil nilai terakhir yang valid dari training
+    At_last <- (2 * sma[n_train]) - dma[n_train]
+    Bt_last <- (2 / (m - 1)) * (sma[n_train] - dma[n_train])
+    
+    # 3. Peramalan n-langkah ke depan (out-of-sample forecast untuk data testing)
+    p <- 1:n_test
+    forecast_test <- At_last + (Bt_last * p)
+    
+    # 4. Hitung Error terhadap data testing
+    error_test <- test_data - forecast_test
+    
+    sse  <- sum(error_test^2, na.rm = TRUE)
+    mse  <- mean(error_test^2, na.rm = TRUE)
+    rmse <- sqrt(mse)
+    mape <- mean(abs(error_test / test_data) * 100, na.rm = TRUE)
+    
+    hasil_list[[as.character(m)]] <- c(m = m, SSE = sse, MSE = mse, RMSE = rmse, MAPE = mape)
+  }
+  
+  # Gabungkan hasil ke dalam dataframe
+  tabel_evaluasi <- as.data.frame(do.call(rbind, hasil_list))
+  rownames(tabel_evaluasi) <- NULL
+  
+  # Urutkan berdasarkan MAPE terkecil
+  tabel_evaluasi <- tabel_evaluasi[order(tabel_evaluasi$MAPE), ]
+  
+  # m terbaik
+  m_optimum <- tabel_evaluasi$m[1]
+  
+  cat("=========================================\n")
+  cat("Ringkasan Evaluasi Seluruh Nilai m:\n")
+  cat("=========================================\n")
+  print(tabel_evaluasi)
+  cat("-----------------------------------------\n")
+  cat(paste0(">>> Nilai m Optimum (MAPE Terkecil): m = ", m_optimum, 
+             " (MAPE: ", round(tabel_evaluasi$MAPE[1], 4), "%)\n"))
+  
+  return(list(tabel = tabel_evaluasi, m_opt = m_optimum))
+}
+m_optimum_result <- cari_m_optimum_dma(training_ma.ts, testing_ma.ts, m_range = 2:8)
+```
+
+
+# Akurasi data uji
+```{r}
+error_test.sma <- testing_ma.ts-data.gab[97:120,3]
+
+SSE_test.sma <- sum(error_test.sma^2)
+MSE_test.sma <- mean(error_test.sma^2)
+MAPE_test.sma <- mean(abs((error_test.sma/testing_ma.ts*100)))
+
+akurasi_test.sma <- matrix(c(SSE_test.sma, MSE_test.sma, MAPE_test.sma))
+row.names(akurasi_test.sma)<- c("SSE", "MSE", "MAPE")
+colnames(akurasi_test.sma) <- c("Akurasi m = 4")
+akurasi_test.sma
+
+```
+# Double Moving Averag
+```{r}
+dma <- SMA(data.sma, n = 2)
+At <- 2*data.sma - dma
+Bt <- 2/(2-1)*(data.sma - dma)
+data.dma<- At+Bt
+data.ramal2<- c(NA, data.dma)
+
+t = 1:24
+f = c()
+
+for (i in t) {
+  f[i] = At[length(At)] + Bt[length(Bt)]*(i)
+}
+
+data.gab2 <- cbind(aktual = c(Data_Tugas.ts), 
+                   pemulusan1 = c(data.sma,rep(NA,24)),
+                   pemulusan2 = c(dma, rep(NA,24)),
+                   At = c(At, rep(NA,24)), 
+                   Bt = c(Bt,rep(NA,24)),
+                   ramalan = c(data.ramal2, f[-1]))
+data.gab2
+```
+
+```{r}
+ts.plot(Data_Tugas.ts, xlab="Time Period ", ylab="Sales", main= "DMA N=2 Data Sales")
+points(Data_Tugas.ts)
+lines(data.gab2[,3],col="green",lwd=2)
+lines(data.gab2[,6],col="red",lwd=2)
+legend("topleft",c("data aktual","data pemulusan","data peramalan"), lty=8, col=c("black","green","red"), cex=0.8)
+
+```
+## Akurasi Data Latih
+```{r}
+error_train.dma = training_ma.ts-data.ramal2[1:length(training_ma.ts)]
+
+SSE_train.dma = sum(error_train.dma[8:length(training_ma.ts)]^2)
+MSE_train.dma = mean(error_train.dma[8:length(training_ma.ts)]^2)
+MAPE_train.dma = mean(abs((error_train.dma[8:length(training_ma.ts)]/training_ma.ts[8:length(training_ma.ts)])*100))
+
+akurasi_train.dma <- matrix(c(SSE_train.dma, MSE_train.dma, MAPE_train.dma))
+row.names(akurasi_train.dma)<- c("SSE", "MSE", "MAPE")
+colnames(akurasi_train.dma) <- c("Akurasi m = 2")
+akurasi_train.dma
+```
+## Akurasi data uji
+```{r}
+error_test.dma = testing_ma.ts-data.gab2[97:120,6]
+SSE_test.dma = sum(error_test.dma^2)
+MSE_test.dma = mean(error_test.dma^2)
+MAPE_test.dma = mean(abs((error_test.dma/testing_ma.ts*100)))
+
+akurasi_test.dma <- matrix(c(SSE_test.dma, MSE_test.dma, MAPE_test.dma))
+row.names(akurasi_test.dma)<- c("SSE", "MSE", "MAPE")
+colnames(akurasi_test.dma) <- c("Akurasi m = 2")
+akurasi_test.dma
+```
+
+# Exponential smoothing
+## Pembagian data
+```{r}
+# Menyamakan data1 dengan kelompok agar variabel asal Anda berfungsi
+data1 <- kelompok
+
+n <- nrow(data1)
+
+# Hitung batas 80%
+n_train <- floor(0.8 * n)
+
+# Bagi data
+training <- data1[1:n_train, ]
+testing  <- data1[(n_train + 1):n, ]
+
+# Ubah ke time series (menggunakan kolom PJME_MW)
+train.ts <- ts(training$PJME_MW)
+test.ts  <- ts(testing$PJME_MW)
+```
+
+# Single Exponential Smoothing (SES)
+```{r}
+# Membentuk Model SES dengan Alpha Berbeda & Optimal
+ses1 <- ses(train.ts, alpha = 0.2, h = length(test.ts))
+ses2 <- ses(train.ts, alpha = 0.7, h = length(test.ts))
+sesopt <- ses(train.ts, h = length(test.ts))
+
+ramalan1 <- ses1
+ramalan2 <- ses2
+ramalanopt <- sesopt
+
+# Model default/standar SES untuk tabel evaluasi tunggal
+ses.model <- sesopt
+ramalan_ses <- as.numeric(ses.model$mean)
+
+error_test_ses <- as.numeric(test.ts) - ramalan_ses
+SSE_test_ses <- sum(error_test_ses^2)
+MSE_test_ses <- mean(error_test_ses^2)
+MAPE_test_ses <- mean(abs(error_test_ses / as.numeric(test.ts))) * 100
+
+akurasi_test_ses <- matrix(c(SSE_test_ses, MSE_test_ses, MAPE_test_ses))
+row.names(akurasi_test_ses) <- c("SSE", "MSE", "MAPE")
+colnames(akurasi_test_ses) <- c("Akurasi SES")
+akurasi_test_ses
+```
+## Akurasi Data Latih
+```{r}
+# SES dengan alpha = 0.2
+SSE1 <- sum(residuals(ses1)^2, na.rm = TRUE)
+MSE1 <- mean(residuals(ses1)^2, na.rm = TRUE)
+RMSE1 <- sqrt(MSE1)
+
+akurasi1 <- matrix(c(SSE1, MSE1, RMSE1))
+row.names(akurasi1) <- c("SSE", "MSE", "RMSE")
+colnames(akurasi1) <- c("Akurasi lambda=0.2")
+akurasi1
+
+# SES dengan alpha = 0.7
+SSE2 <- sum(residuals(ses2)^2, na.rm = TRUE)
+MSE2 <- mean(residuals(ses2)^2, na.rm = TRUE)
+RMSE2 <- sqrt(MSE2)
+
+akurasi2 <- matrix(c(SSE2, MSE2, RMSE2))
+row.names(akurasi2) <- c("SSE", "MSE", "RMSE")
+colnames(akurasi2) <- c("Akurasi lambda=0.7")
+akurasi2
+```
+## Akurasi Data Uji
+```{r}
+n_test <- nrow(testing)
+
+# error (ramalan - aktual) menggunakan kolom PJME_MW
+e1   <- as.numeric(ramalan1$mean)[1:n_test] - as.numeric(testing$PJME_MW)
+e2   <- as.numeric(ramalan2$mean)[1:n_test] - as.numeric(testing$PJME_MW)
+eopt <- as.numeric(ramalanopt$mean)[1:n_test] - as.numeric(testing$PJME_MW)
+
+# SSE / MSE / RMSE untuk masing-masing model
+SSEtesting1  <- sum(e1^2, na.rm = TRUE)
+MSEtesting1  <- mean(e1^2, na.rm = TRUE)
+RMSEtesting1 <- sqrt(MSEtesting1)
+
+SSEtesting2  <- sum(e2^2, na.rm = TRUE)
+MSEtesting2  <- mean(e2^2, na.rm = TRUE)
+RMSEtesting2 <- sqrt(MSEtesting2)
+
+SSEtestingopt  <- sum(eopt^2, na.rm = TRUE)
+MSEtestingopt  <- mean(eopt^2, na.rm = TRUE)
+RMSEtestingopt <- sqrt(MSEtestingopt)
+
+# Tabel ringkas
+akurasitesting_SSE <- matrix(c(SSEtesting1, SSEtesting2, SSEtestingopt),
+                             nrow = 3,
+                             dimnames = list(c("SSE1", "SSE2", "SSEopt"), "Nilai"))
+akurasitesting_MSE <- matrix(c(MSEtesting1, MSEtesting2, MSEtestingopt),
+                             nrow = 3,
+                             dimnames = list(c("MSE1", "MSE2", "MSEopt"), "Nilai"))
+akurasitesting_RMSE <- matrix(c(RMSEtesting1, RMSEtesting2, RMSEtestingopt),
+                              nrow = 3,
+                              dimnames = list(c("RMSE1", "RMSE2", "RMSEopt"), "Nilai"))
+
+akurasitesting_SSE
+akurasitesting_MSE
+akurasitesting_RMSE
+```
+
+# Double Exponential Smoothing (DES)
+```{r}
+# Membentuk Model SES
+ses.model <- ses(train.ts, h = length(test.ts))
+ramalan_ses <- as.numeric(ses.model$mean)
+
+# Akurasi Data Uji SES (menggunakan as.numeric agar tidak bentrok indeks ts)
+error_test_ses <- as.numeric(test.ts) - ramalan_ses
+SSE_test_ses <- sum(error_test_ses^2)
+MSE_test_ses <- mean(error_test_ses^2)
+MAPE_test_ses <- mean(abs(error_test_ses / as.numeric(test.ts))) * 100
+
+akurasi_test_ses <- matrix(c(SSE_test_ses, MSE_test_ses, MAPE_test_ses))
+row.names(akurasi_test_ses) <- c("SSE", "MSE", "MAPE")
+colnames(akurasi_test_ses) <- c("Akurasi SES")
+akurasi_test_ses
+```
+
+SMA
+
+Pencarian $n$ Optimum: Pengujian parameter $n$ dari 2 hingga 12 pada data latih menunjukkan bahwa $n = 2$ merupakan orde optimum dengan MAPE terkecil (5.18%) dan RMSE (2.120,44). Semakin besar orde $n$, nilai MAPE dan RMSE mengalami peningkatan karena pemulusan yang terlalu meratakan fluktuasi lokal.Akurasi Data Latih ($n = 5$): Menghasilkan nilai SSE = $1.596 \times 10^{12}$, MSE = $1.372 \times 10^7$, dan MAPE = 9.47%.Akurasi Data Uji ($m = 4$): Evaluasi out-of-sample pada data uji menghasilkan SSE = $1.418 \times 10^{12}$, MSE = $4.877 \times 10^7$, dan MAPE = 17.85%.
+
+DMA
+
+Pencarian $m$ Optimum: Hasil fungsi cari_m_optimum_dma menunjukkan $m = 4$ sebagai orde optimum pada evaluasi deret ramalan DMA.Akurasi Model DMA ($m = 2$):Data Latih: SSE = $7.362 \times 10^{11}$, MSE = $6.331 \times 10^6$, dan MAPE = 6.31%.Data Uji: SSE = $1.614 \times 10^{12}$, MSE = $5.551 \times 10^7$, dan MAPE = 18.83%.Analisis Performa: DMA cocok untuk data yang mengandung tren linear lokal. Namun, ramalan DMA untuk horizon jangka panjang (2.000 langkah ke depan) cenderung menghasilkan akumulasi error yang lebih besar karena memproyeksikan tren secara konstan tanpa memperhitungkan pola musiman/puncak fluktuasi.
+
+SES
+
+Interpretasi $\alpha$: Pada data latih, nilai parameter $\alpha = 0.7$ menghasilkan error yang jauh lebih kecil dibandingkan $\alpha = 0.2$. Hal ini menunjukkan bahwa data konsumsi listrik sangat dipengaruhi oleh observasi pada satu waktu sebelumnya (recent memory).Performa Out-of-Sample: Parameter $\alpha$ optimal memberikan nilai SSE, MSE, dan RMSE terendah di antara seluruh variasi SES pada data uji.
