@@ -1,0 +1,193 @@
+---
+title: "Tugas Pertemuan 3 - Regresi dengan Peubah Lag"
+author: "Rafy Al Fatih"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: yeti
+    toc: true
+    toc_float: true
+  
+---
+
+
+# Tujuan
+
+AQI ditetapkan sebagai variabel dependen ($Y$) dan O3 sebagai variabel independen ($X$). O3 dipilih karena memiliki korelasi absolut tertinggi terhadap AQI di antara enam polutan kandidat. Tiga model yang dibandingkan: Koyck, DLM, dan ARDL. Sebanyak 80% observasi awal menjadi data pelatihan, sedangkan 20% terakhir menjadi data pengujian.
+
+# Persiapan data
+
+```{r setup, message=FALSE, warning=FALSE}
+# install.packages(c("rmarkdown", "knitr", "lmtest")) # jalankan sekali bila paket belum ada
+library(lmtest)
+
+file_data <- "../Data/NewDelhi_Air_quality.csv"
+if (!file.exists(file_data)) stop("Berkas CSV tidak ditemukan; pastikan struktur folder tetap sama.")
+
+raw <- read.csv(file_data, check.names = FALSE)
+names(raw)[1] <- "id"
+raw$datetime <- as.POSIXct(raw$datetime, format = "%Y-%m-%d:%H", tz = "UTC")
+raw <- raw[order(raw$datetime), ]
+
+polutan <- c("CO", "no2", "o3", "pm10", "pm25", "so2")
+korelasi <- data.frame(
+  Polutan = polutan,
+  Korelasi_AQI = sapply(polutan, function(z) cor(raw$AQI, raw[[z]], use = "complete.obs"))
+)
+korelasi <- korelasi[order(-abs(korelasi$Korelasi_AQI)), ]
+knitr::kable(korelasi, digits = 3, caption = "Korelasi polutan terhadap AQI")
+
+dat <- na.omit(data.frame(waktu = raw$datetime, AQI = raw$AQI, O3 = raw$o3))
+n <- nrow(dat); n_train <- floor(.80 * n)
+train <- dat[seq_len(n_train), ]; test <- dat[(n_train + 1):n, ]
+data.frame(Observasi = n, Training = nrow(train), Testing = nrow(test),
+           Awal = min(dat$waktu), Akhir = max(dat$waktu))
+```
+
+```{r plot-data, fig.width=10, fig.height=4}
+plot(dat$waktu, dat$AQI, type="l", lwd=2, xlab="Waktu", ylab="AQI",
+     main="Deret waktu AQI New Delhi")
+abline(v=min(test$waktu), col="firebrick", lty=2, lwd=2)
+legend("topleft", c("AQI", "Awal data uji"), col=c("black","firebrick"),
+       lty=c(1,2), bty="n")
+```
+
+# Fungsi pemodelan
+
+DLM menggunakan $AQI_t=\alpha+\sum_{j=0}^{p}\beta_jO3_{t-j}+e_t$. ARDL menambahkan $\sum_{k=1}^{q}\phi_kAQI_{t-k}$. Di dokumen ini, $p$ adalah lag maksimum O3 dan $q$ adalah lag maksimum AQI.
+
+```{r functions}
+make_lag_data <- function(d, p_x=0, q_y=0, start=max(p_x,q_y)+1) {
+  out <- data.frame(y=d$AQI[start:nrow(d)])
+  for (j in 0:p_x) out[[paste0("x_lag_",j)]] <- d$O3[(start-j):(nrow(d)-j)]
+  if (q_y > 0) {
+    for (j in seq_len(q_y)) out[[paste0("y_lag_",j)]] <- d$AQI[(start-j):(nrow(d)-j)]
+  }
+  out
+}
+fit_lag <- function(d, p_x=0, q_y=0, start=max(p_x,q_y)+1) {
+  z <- make_lag_data(d,p_x,q_y,start)
+  rhs <- c(paste0("x_lag_",0:p_x),if(q_y>0) paste0("y_lag_",1:q_y))
+  lm(reformulate(rhs,response="y"),data=z)
+}
+forecast_lag <- function(fit, train, test, p_x=0, q_y=0) {
+  x <- c(train$O3,test$O3); y <- c(train$AQI,rep(NA_real_,nrow(test)))
+  b <- coef(fit); out <- numeric(nrow(test))
+  for (h in seq_along(out)) {
+    i <- nrow(train)+h; nd <- list()
+    for (j in 0:p_x) nd[[paste0("x_lag_",j)]] <- x[i-j]
+    if (q_y > 0) {
+      for (j in seq_len(q_y)) nd[[paste0("y_lag_",j)]] <- y[i-j]
+    }
+    out[h] <- b["(Intercept)"] + sum(b[names(nd)]*unlist(nd))
+    y[i] <- out[h]
+  }
+  out
+}
+mape <- function(a,p) mean(abs((a-p)/a))*100
+diagnosis <- function(fit,nama) data.frame(
+  Model=nama, AIC=AIC(fit), DW_p=dwtest(fit)$p.value,
+  BP_p=bptest(fit)$p.value, Shapiro_p=shapiro.test(residuals(fit))$p.value)
+```
+
+# Model Koyck
+
+Model Koyck mengasumsikan dampak O3 menurun secara geometrik:
+
+$$AQI_t=\alpha+\beta O3_t+\lambda AQI_{t-1}+v_t.$$
+
+Tidak ada lag maksimum bebas pada Koyck. Oleh sebab itu, lag optimum dilaporkan sebagai **lag efektif 95%**, yaitu periode minimum sampai 95% dampak geometrik tercakup. Interpretasi ini berlaku jika $0<\lambda<1$.
+
+```{r koyck}
+model_koyck <- fit_lag(train,p_x=0,q_y=1)
+lambda <- unname(coef(model_koyck)["y_lag_1"])
+lag_koyck <- if(is.finite(lambda)&&lambda>0&&lambda<1) ceiling(log(.05)/log(lambda))-1 else NA
+summary(model_koyck)
+data.frame(lambda=lambda, lag_efektif_95_persen=lag_koyck,
+  catatan=ifelse(is.na(lag_koyck),"Lambda di luar (0,1); peluruhan geometrik tidak terpenuhi.",
+                 "Periode hingga 95% dampak kumulatif tercakup."))
+ramal_koyck <- forecast_lag(model_koyck,train,test,p_x=0,q_y=1)
+```
+
+# Distributed Lag Model (DLM)
+
+Lag optimum DLM dipilih dari $p=0,\ldots,6$ berdasarkan AIC terkecil. Semua kandidat memakai bagian sampel pelatihan yang sama (enam observasi awal dihilangkan) agar AIC dapat dibandingkan secara adil.
+
+```{r dlm}
+lag_maks <- 6
+dlm_grid <- data.frame(lag_O3=0:lag_maks,AIC=NA_real_)
+for(p in 0:lag_maks) dlm_grid$AIC[p+1] <- AIC(fit_lag(train,p,0,start=lag_maks+1))
+knitr::kable(dlm_grid,digits=3,caption="Pemilihan lag DLM berdasarkan AIC")
+p_dlm <- dlm_grid$lag_O3[which.min(dlm_grid$AIC)]
+model_dlm <- fit_lag(train,p_dlm,0)
+summary(model_dlm)
+data.frame(lag_optimum_DLM=p_dlm,AIC=AIC(model_dlm))
+ramal_dlm <- forecast_lag(model_dlm,train,test,p_dlm,0)
+```
+
+# Autoregressive Distributed Lag (ARDL)
+
+Kombinasi $p=0,\ldots,6$ (lag O3) dan $q=1,\ldots,6$ (lag AQI) dibandingkan memakai AIC. Seperti DLM, semua kandidat menggunakan sampel efektif yang sama.
+
+```{r ardl}
+ardl_grid <- expand.grid(lag_O3_p=0:lag_maks,lag_AQI_q=1:lag_maks)
+ardl_grid$AIC <- mapply(function(p,q) AIC(fit_lag(train,p,q,start=lag_maks+1)),
+                         ardl_grid$lag_O3_p,ardl_grid$lag_AQI_q)
+ardl_grid <- ardl_grid[order(ardl_grid$AIC),]
+knitr::kable(ardl_grid,digits=3,caption="Kandidat ARDL berdasarkan AIC")
+best <- ardl_grid[1,]; p_ardl <- best$lag_O3_p; q_ardl <- best$lag_AQI_q
+model_ardl <- fit_lag(train,p_ardl,q_ardl)
+summary(model_ardl)
+data.frame(lag_optimum_O3_p=p_ardl,lag_optimum_AQI_q=q_ardl,AIC=AIC(model_ardl))
+ramal_ardl <- forecast_lag(model_ardl,train,test,p_ardl,q_ardl)
+```
+
+# Evaluasi asumsi
+
+Hipotesis nol uji Durbin--Watson adalah tidak ada autokorelasi residual, Breusch--Pagan adalah homoskedastisitas, dan Shapiro--Wilk adalah residual normal. Pada taraf 5%, asumsi tidak ditolak apabila *p-value* > 0,05.
+
+```{r diagnostics}
+diagnostik <- rbind(diagnosis(model_koyck,"Koyck"),
+                    diagnosis(model_dlm,paste0("DLM (p=",p_dlm,")")),
+                    diagnosis(model_ardl,paste0("ARDL (p=",p_ardl,", q=",q_ardl,")")))
+knitr::kable(diagnostik,digits=4,caption="Uji diagnostik residual")
+```
+
+```{r residual-plots, fig.width=10, fig.height=7}
+par(mfrow=c(3,2),mar=c(3,3,2,1))
+for(fit in list(model_koyck,model_dlm,model_ardl)) {
+  plot(fitted(fit),residuals(fit),pch=19,col="steelblue",xlab="Taksiran",ylab="Residual",
+       main="Residual vs fitted"); abline(h=0,lty=2,col="firebrick")
+  qqnorm(residuals(fit),pch=19,col="steelblue",main="Q-Q plot residual")
+  qqline(residuals(fit),col="firebrick",lwd=2)
+}
+```
+
+# Perbandingan peramalan
+
+Ramalan dibuat secara rekursif untuk AQI; nilai O3 periode uji dipakai sebagai variabel eksogen yang diketahui. MAPE lebih kecil menunjukkan ramalan yang lebih akurat.
+
+```{r accuracy}
+akurasi <- data.frame(
+  Model=c("Koyck",paste0("DLM (p=",p_dlm,")"),paste0("ARDL (p=",p_ardl,", q=",q_ardl,")")),
+  MAPE_persen=c(mape(test$AQI,ramal_koyck),mape(test$AQI,ramal_dlm),mape(test$AQI,ramal_ardl)))
+akurasi <- akurasi[order(akurasi$MAPE_persen),]
+knitr::kable(akurasi,digits=3,caption="MAPE data uji")
+cat("Model dengan MAPE terendah:",akurasi$Model[1],"(",round(akurasi$MAPE_persen[1],3),"%).")
+```
+
+```{r forecast-plot, fig.width=11, fig.height=5}
+ylim <- range(c(test$AQI,ramal_koyck,ramal_dlm,ramal_ardl))
+plot(test$waktu,test$AQI,type="b",pch=16,lwd=2,col="black",ylim=ylim,
+     xlab="Waktu",ylab="AQI",main="Aktual dan ramalan pada data uji")
+lines(test$waktu,ramal_koyck,type="b",pch=15,lwd=2,col="firebrick")
+lines(test$waktu,ramal_dlm,type="b",pch=17,lwd=2,col="royalblue")
+lines(test$waktu,ramal_ardl,type="b",pch=18,lwd=2,col="darkgreen")
+legend("topleft",bty="n",lwd=2,pch=c(16,15,17,18),
+       col=c("black","firebrick","royalblue","darkgreen"),
+       legend=c("Aktual","Koyck","DLM","ARDL"))
+```
+
+# Kesimpulan
+
+Lag optimum, diagnostik, dan model dengan MAPE terendah tercetak otomatis ketika dokumen di-*knit*. Model terbaik sebaiknya dipilih dari MAPE terendah dengan mempertimbangkan hasil uji residual.
