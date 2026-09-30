@@ -1,0 +1,753 @@
+---
+title: "Arima"
+author: "Rafy Al Fatih"
+date: "2026-09-30"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r}
+library(readr)
+library(tseries)
+library(forecast)
+library(MASS)
+library(lmtest)
+library(TSA)
+library(ggplot2)
+```
+
+# Import Data
+```{r}
+data <- read_csv(
+  "https://raw.githubusercontent.com/Rafy-M/mpdw/refs/heads/main/Data/data%20mpdw.csv"
+)
+data
+y <- as.numeric(data$`Monthly Anomaly`)
+
+data.ts <- ts(
+  y,
+  start = c(1850, 1),
+  frequency = 12
+)
+
+# plot seluruh data
+plot.ts(
+  data.ts,
+  main = "Plot Monthly Anomaly",
+  xlab = "Waktu",
+  ylab = "Monthly Anomaly"
+)
+```
+# Pembagian data train dan test
+```{r}
+n <- length(data.ts)
+n.train <- floor(0.80 * n)
+
+train <- window(
+  data.ts,
+  start = c(1850, 1),
+  end = c(1988, 5)
+)
+
+test <- window(
+  data.ts,
+  start = c(1988, 6),
+  end = c(2023, 1)
+)
+
+length(train)
+cat("Jumlah data train: ", length(train), "\n")
+length(test)
+cat("Jumlah data test: ", length(test), "\n")
+
+# cek periode
+start(train)
+cat("Periode data train mulai: ", start(train), "\n")
+end(train)
+cat("Periode data train selesai: ", end(train), "\n")
+
+start(test)
+cat("Periode data test mulai: ", start(test), "\n")
+end(test)
+cat("Periode data test selesai: ", end(test), "\n")
+```
+
+```{r}
+plot(
+  train,
+  main = "Data Train Monthly Anomaly",
+  xlab = "Waktu",
+  ylab = "Monthly Anomaly"
+)
+
+plot(
+  test,
+  main = "Data Test Monthly Anomaly",
+  xlab = "Waktu",
+  ylab = "Monthly Anomaly"
+)
+```
+
+# Cek Stasioneritas
+
+## Dalam rataan
+```{r}
+acf(
+  train,
+  main = "ACF Data Train"
+)
+
+# ADF
+adf.train <- adf.test(train)
+
+adf.train
+```
+Karena p-value < 0.05, maka data train stasioner dalam rataan.
+
+## Dalam ragam
+```{r}
+index <- 1:length(train)
+
+# cek minimum
+min(train)
+
+# konstanta penggeser
+c <- abs(min(train)) + 1
+
+train.shift <- train + c
+
+min(train.shift)
+
+bc <- boxcox(
+  train.shift ~ index,
+  lambda = seq(-2, 2, by = 0.1)
+)
+
+plot(bc)
+```
+Interval berada pada angka 1, sehingga tidak perlu dilakukan transformasi. Data train stasioner dalam ragam.
+
+# Identifikasi Model 
+```{r}
+acf(
+  train,
+  lag.max = 30,
+  main = "ACF Data Train"
+)
+
+pacf(
+  train,
+  lag.max = 30,
+  main = "PACF Data Train"
+)
+
+# EACF
+eacf(train)
+```
+
+```{r}
+model_100 <- Arima(
+  train,
+  order = c(1,0,0),
+  method = "ML"
+)
+
+model_200 <- Arima(
+  train,
+  order = c(2,0,0),
+  method = "ML"
+)
+
+model_001 <- Arima(
+  train,
+  order = c(0,0,1),
+  method = "ML"
+)
+
+model_002 <- Arima(
+  train,
+  order = c(0,0,2),
+  method = "ML"
+)
+
+model_101 <- Arima(
+  train,
+  order = c(1,0,1),
+  method = "ML"
+)
+
+model_102 <- Arima(
+  train,
+  order = c(1,0,2),
+  method = "ML"
+)
+
+model_201 <- Arima(
+  train,
+  order = c(2,0,1),
+  method = "ML"
+)
+
+model_202 <- Arima(
+  train,
+  order = c(2,0,2),
+  method = "ML"
+)
+
+model_203 <- Arima(
+  train,
+  order = c(2,0,3),
+  method = "ML"
+)
+
+coeftest(model_100)
+coeftest(model_200)
+coeftest(model_001)
+coeftest(model_002)
+coeftest(model_101)
+coeftest(model_102)
+coeftest(model_201)
+coeftest(model_202)
+coeftest(model_203)
+```
+
+## lihat perbandigan
+```{r}
+AIC_table <- data.frame(
+  Model = c(
+    "ARIMA(1,0,0)",
+    "ARIMA(2,0,0)",
+    "ARIMA(0,0,1)",
+    "ARIMA(0,0,2)",
+    "ARIMA(1,0,1)",
+    "ARIMA(1,0,2)",
+    "ARIMA(2,0,1)",
+    "ARIMA(2,0,2)",
+    "ARIMA(2,0,3)"
+  ),
+  
+  AIC = c(
+    AIC(model_100),
+    AIC(model_200),
+    AIC(model_001),
+    AIC(model_002),
+    AIC(model_101),
+    AIC(model_102),
+    AIC(model_201),
+    AIC(model_202),
+    AIC(model_203)
+  )
+)
+
+AIC_table[order(AIC_table$AIC), ]
+```
+Berdasarkan nilai AIC, model terbaik adalah ARIMA(2,0,1) dengan nilai AIC sebesar -880.0729	
+
+# Analisis Residual
+```{r}
+model.final <- model_201
+
+res <- residuals(model.final)
+
+# Plot residual
+plot(
+  res,
+  main = "Residual ARIMA(2,0,1)",
+  ylab = "Residual",
+  xlab = "Waktu"
+)
+
+# ACF residual
+acf(
+  res,
+  main = "ACF Residual ARIMA(2,0,1)"
+)
+
+# PACF residual
+pacf(
+  res,
+  main = "PACF Residual ARIMA(2,0,1)"
+)
+```
+```{r}
+Box.test(
+  res,
+  lag = 20,
+  type = "Ljung-Box",
+  fitdf = 3
+)
+
+Box.test(
+  res^2,
+  lag = 20,
+  type = "Ljung-Box",
+  fitdf = 3
+)
+
+t.test(res, mu = 0)
+
+ks.test(
+  as.numeric(scale(res)),
+  "pnorm"
+)
+
+qqnorm(res)
+qqline(res)
+```
+# Analisis residual model baru
+```{r}
+model.final <- model_201
+
+# Residual
+res <- residuals(model.final)
+
+# Plot residual
+plot(
+  res,
+  main = "Residual ARIMA(2,0,1)",
+  xlab = "Waktu",
+  ylab = "Residual"
+)
+
+# ACF residual
+acf(
+  res,
+  lag.max = 30,
+  main = "ACF Residual ARIMA(2,0,1)"
+)
+
+# PACF residual
+pacf(
+  res,
+  lag.max = 30,
+  main = "PACF Residual ARIMA(2,0,1)"
+)
+```
+```{r}
+lb.res <- Box.test(
+  res,
+  lag = 20,
+  type = "Ljung-Box",
+  fitdf = 3
+)
+
+lb.res
+
+lb.res2 <- Box.test(
+  res^2,
+  lag = 20,
+  type = "Ljung-Box",
+  fitdf = 3
+)
+
+lb.res2
+
+t.test(res, mu = 0)
+```
+```{r}
+qqnorm(
+  res,
+  main = "QQ Plot Residual ARIMA(2,0,1)"
+)
+
+qqline(res)
+
+ks.test(
+  as.numeric(scale(res)),
+  "pnorm"
+)
+```
+```{r}
+cat("Ljung-Box residual p-value:",
+    lb.res$p.value, "\n")
+
+cat("Ljung-Box residual kuadrat p-value:",
+    lb.res2$p.value, "\n")
+
+cat("Uji t residual p-value:",
+    t.test(res, mu = 0)$p.value, "\n")
+
+cat("KS normalitas p-value:",
+    ks.test(as.numeric(scale(res)), "pnorm")$p.value, "\n")
+```
+
+# Cek Overfitting
+```{r}
+model_301 <- Arima(
+  train,
+  order = c(3,0,1),
+  method = "ML"
+)
+
+model_202 <- Arima(
+  train,
+  order = c(2,0,2),
+  method = "ML"
+)
+coeftest(model_301)
+coeftest(model_202)
+
+AIC_overfit <- data.frame(
+  Model = c(
+    "ARIMA(2,0,1)",
+    "ARIMA(3,0,1)",
+    "ARIMA(2,0,2)"
+  ),
+  AIC = c(
+    AIC(model.final),
+    AIC(model_301),
+    AIC(model_202)
+  )
+)
+
+AIC_overfit[order(AIC_overfit$AIC), ]
+```
+ARIMA(2,0,1) dipertahankan sebagai model final karena memiliki nilai AIC paling rendah dibandingkan model overfit ARIMA(3,0,1) dan ARIMA(2,0,2), serta seluruh parameternya signifikan. Penambahan orde AR atau MA tidak memberikan perbaikan model berdasarkan AIC dan justru menghasilkan parameter yang tidak signifikan pada model yang lebih kompleks.
+
+# Forecasting
+```{r}
+model.final <- model_201
+
+forecast.final <- forecast(
+  model.final,
+  h = length(test)
+)
+
+hasil_arima <- data.frame(
+  Waktu = time(test),
+  Aktual = as.numeric(test),
+  Forecast = as.numeric(forecast.final$mean)
+)
+
+ggplot(
+  hasil_arima,
+  aes(x = Waktu)
+) +
+  geom_line(
+    aes(
+      y = Aktual,
+      color = "Aktual"
+    ),
+    linewidth = 0.7
+  ) +
+  geom_line(
+    aes(
+      y = Forecast,
+      color = "Forecast ARIMA"
+    ),
+    linewidth = 0.7
+  ) +
+  labs(
+    title = "Forecast ARIMA(2,0,1)",
+    x = "Tahun",
+    y = "Monthly Anomaly",
+    color = "Keterangan"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom"
+  )
+
+```
+
+```{r}
+ggplot(
+  hasil_arima,
+  aes(x = Waktu)
+) +
+  geom_line(
+    aes(
+      y = Aktual,
+      color = "Aktual"
+    ),
+    linewidth = 0.7
+  ) +
+  geom_line(
+    aes(
+      y = Forecast,
+      color = "Forecast ARIMA"
+    ),
+    linewidth = 0.7
+  ) +
+  labs(
+    title = "Forecast ARIMA(2,0,1)",
+    x = "Waktu",
+    y = "Monthly Anomaly",
+    color = "Keterangan"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom"
+  )
+```
+
+## Evaluasi Model   
+```{r}
+forecast_value <- as.numeric(forecast.final$mean)
+actual_value <- as.numeric(test)
+
+# RMSE
+RMSE <- sqrt(
+  mean((actual_value - forecast_value)^2)
+)
+
+# MAE
+MAE <- mean(
+  abs(actual_value - forecast_value)
+)
+
+RMSE
+MAE
+```
+
+# Coba betulin
+```{r}
+n <- length(data.ts)
+n.train <- floor(0.80 * n)
+
+train <- window(
+  data.ts,
+  start = c(1850, 1),
+  end = c(1988, 5)
+)
+
+test <- window(
+  data.ts,
+  start = c(1988, 6),
+  end = c(2023, 1)
+)
+
+length(train)
+length(test)
+
+start(train)
+end(train)
+
+start(test)
+end(test)
+```
+
+```{r}
+acf(
+  train,
+  lag.max = 60,
+  main = "ACF Data Train"
+)
+
+pacf(
+  train,
+  lag.max = 60,
+  main = "PACF Data Train"
+)
+```
+
+```{r}
+model_111_drift <- Arima(
+  train,
+  order = c(1,1,1),
+  include.drift = TRUE,
+  method = "ML"
+)
+
+model_211_drift <- Arima(
+  train,
+  order = c(2,1,1),
+  include.drift = TRUE,
+  method = "ML"
+)
+
+model_112_drift <- Arima(
+  train,
+  order = c(1,1,2),
+  include.drift = TRUE,
+  method = "ML"
+)
+
+model_212_drift <- Arima(
+  train,
+  order = c(2,1,2),
+  include.drift = TRUE,
+  method = "ML"
+)
+
+coeftest(model_111_drift)
+coeftest(model_211_drift)
+coeftest(model_112_drift)
+coeftest(model_212_drift)
+```
+
+```{r}
+AIC_diff <- data.frame(
+  Model = c(
+    "ARIMA(1,1,1) + drift",
+    "ARIMA(2,1,1) + drift",
+    "ARIMA(1,1,2) + drift",
+    "ARIMA(2,1,2) + drift"
+  ),
+  
+  AIC = c(
+    AIC(model_111_drift),
+    AIC(model_211_drift),
+    AIC(model_112_drift),
+    AIC(model_212_drift)
+  )
+)
+
+AIC_diff[order(AIC_diff$AIC), ]
+```
+
+```{r}
+cek_residual <- function(model) {
+  
+  res <- residuals(model)
+  
+  lb <- Box.test(
+    res,
+    lag = 20,
+    type = "Ljung-Box",
+    fitdf = length(coef(model))
+  )
+  
+  lb2 <- Box.test(
+    res^2,
+    lag = 20,
+    type = "Ljung-Box",
+    fitdf = length(coef(model))
+  )
+  
+  t_res <- t.test(res, mu = 0)
+  
+  data.frame(
+    AIC = AIC(model),
+    LB_Residual = lb$p.value,
+    LB_Residual_Kuadrat = lb2$p.value,
+    Mean_Residual = mean(res),
+    P_Mean = t_res$p.value
+  )
+}
+
+cek_residual(model_111_drift)
+cek_residual(model_211_drift)
+cek_residual(model_112_drift)
+cek_residual(model_212_drift)
+```
+
+# Coba Sarima
+```{r}
+model_sarima_111 <- Arima(
+  train,
+  order = c(1,1,1),
+  seasonal = c(1,0,1),
+  include.drift = TRUE,
+  method = "ML"
+)
+
+model_sarima_211 <- Arima(
+  train,
+  order = c(2,1,1),
+  seasonal = c(1,0,1),
+  include.drift = TRUE,
+  method = "ML"
+)
+
+model_sarima_212 <- Arima(
+  train,
+  order = c(2,1,2),
+  seasonal = c(1,0,1),
+  include.drift = TRUE,
+  method = "ML"
+)
+
+coeftest(model_sarima_111)
+coeftest(model_sarima_211)
+coeftest(model_sarima_212)
+```
+
+```{r}
+AIC_sarima <- data.frame(
+  Model = c(
+    "SARIMA(1,1,1)(1,0,1)[12]",
+    "SARIMA(2,1,1)(1,0,1)[12]",
+    "SARIMA(2,1,2)(1,0,1)[12]"
+  ),
+  
+  AIC = c(
+    AIC(model_sarima_111),
+    AIC(model_sarima_211),
+    AIC(model_sarima_212)
+  )
+)
+
+AIC_sarima[order(AIC_sarima$AIC), ]
+```
+
+```{r}
+cek_residual(model_sarima_111)
+cek_residual(model_sarima_211)
+cek_residual(model_sarima_212)
+```
+
+# Forecast Model Sarima
+```{r}
+model.final <- model_sarima_211
+
+forecast.final <- forecast(
+  model.final,
+  h = length(test)
+)
+
+hasil_arima <- data.frame(
+  Waktu = time(test),
+  Aktual = as.numeric(test),
+  Forecast = as.numeric(forecast.final$mean)
+)
+
+ggplot(
+  hasil_arima,
+  aes(x = Waktu)
+) +
+  geom_line(
+    aes(
+      y = Aktual,
+      color = "Aktual"
+    ),
+    linewidth = 0.7
+  ) +
+  geom_line(
+    aes(
+      y = Forecast,
+      color = "Forecast ARIMA"
+    ),
+    linewidth = 0.7
+  ) +
+  labs(
+    title = "Forecast SARIMA",
+    x = "Tahun",
+    y = "Monthly Anomaly",
+    color = "Keterangan"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom"
+  )
+```
+
+## Evaluasi Model Sarima
+```{r}
+forecast_value <- as.numeric(forecast.final$mean)
+actual_value <- as.numeric(test)
+
+RMSE <- sqrt(
+  mean((actual_value - forecast_value)^2)
+)
+
+MAE <- mean(
+  abs(actual_value - forecast_value)
+)
+
+cat("RMSE :", RMSE, "\n")
+cat("MAE  :", MAE, "\n")
+```
+
